@@ -72,7 +72,8 @@ export interface ChainReader {
     kind: 'EXACT_INPUT' | 'EXACT_OUTPUT',
     params: { poolKey: PoolKeyOnChain; zeroForOne: boolean; exactAmount: bigint; hookData: Hex }
   ): Promise<{ amount: bigint; gasEstimate: bigint }>;
-  getSlot0(stateView: Address, poolId: Hex): Promise<Slot0>;
+  /** Pool slot0; pass `blockNumber` for a historical (archive) read. */
+  getSlot0(stateView: Address, poolId: Hex, blockNumber?: bigint): Promise<Slot0>;
   getLiquidity(stateView: Address, poolId: Hex): Promise<bigint>;
   getPositionFeeState(
     stateView: Address,
@@ -244,13 +245,14 @@ export class ViemChainReader implements ChainReader {
     );
   }
 
-  getSlot0(stateView: Address, poolId: Hex): Promise<Slot0> {
+  getSlot0(stateView: Address, poolId: Hex, blockNumber?: bigint): Promise<Slot0> {
     return this.run('StateView.getSlot0', async () => {
       const [sqrtPriceX96, tick, protocolFee, lpFee] = await this.client.readContract({
         address: stateView,
         abi: stateViewAbi,
         functionName: 'getSlot0',
         args: [poolId],
+        ...(blockNumber !== undefined ? { blockNumber } : {}),
       });
       return {
         sqrtPriceX96,

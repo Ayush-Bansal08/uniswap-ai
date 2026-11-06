@@ -15,28 +15,31 @@ only from official Uniswap sources.
 Works as a backend service (streamable HTTP, bearer auth) and in Claude Code / Cursor (stdio).
 Built for the Uniswap track at ETHGlobal Mumbai 2026 as part of Warden (a verified-human AI DeFi agent), and packaged here as a `uniswap-ai` plugin. Install it with `/plugin install uniswap-agent-mcp@uniswap-ai` after adding this marketplace; see [PLUGIN.md](PLUGIN.md).
 
+**As a `uniswap-ai` plugin:** <https://github.com/Ayush-Bansal08/uniswap-ai/tree/feat/uniswap-agent-mcp/packages/plugins/uniswap-agent-mcp> (fork of `Uniswap/uniswap-ai`, branch
+`feat/uniswap-agent-mcp`).
+
 ---
 
 ## Tools
 
-| #   | Tool                | Type  | Inputs (key)                                                                                                         | Outputs (key)                                                                                                                 | Uniswap source                                                                                           |
-| --- | ------------------- | ----- | -------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| 1   | `get_quote`         | read  | chainId, tokenIn/out (symbol or address), amount (human), type, swapper, slippagePct?                                | amountIn/out (raw + decimal), minOut / maxIn, priceImpactPct, gas (wei + USD), route (pools, fees, hooks), quoteId, expiresAt | Trading API `POST /quote` (CLASSIC) · `swap-integration` skill                                           |
-| 2   | `quote_pool`        | read  | chainId, poolKey, zeroForOne, exactAmount, type                                                                      | amountIn/out, gasEstimate, poolId                                                                                             | v4 **V4Quoter** `quoteExactInputSingle` / `quoteExactOutputSingle` via `eth_call` · `v4-sdk-integration` |
-| 3   | `get_portfolio`     | read  | chainId, address, tokens?                                                                                            | per token: balanceRaw, balance, priceUsd, valueUsd; totalUsd                                                                  | multicall `balanceOf` + mainnet `/quote` reference prices                                                |
-| 4   | `get_price_history` | read  | symbol, window `1h/24h/7d`, interval `hour/day`                                                                      | series `[{ts, priceUsd}]`, open/close/high/low, changePct, **asOf + lag + stale**                                             | official **v4 subgraph** (`PoolHourData`/`PoolDayData`, `TokenHourData`/`TokenDayData`)                  |
-| 5   | `get_lp_positions`  | read  | chainId, owner, tokenIds[]                                                                                           | pool key, hook, ticks, currentTick, inRange, amounts, uncollected fees, valueUsd                                              | v4 **PositionManager** + **StateView**; `@uniswap/v4-sdk` `Position` math                                |
-| 6   | `compare_pools`     | read  | chainId, tokenA, tokenB                                                                                              | execution pools + mainnet market pools (TVL, 7d volume/fees, fee APR), ranked list, `recommended` + reasons                   | LP API `POST /lp/pool_info` + StateView; v4 subgraph                                                     |
-| 7   | `check_token`       | read  | chainId, token                                                                                                       | allowlist, unsupported-list, isContract, liquidityDepthUsd ($1k probe), riskFlags, verdict OK/CAUTION/BLOCK                   | Uniswap unsupported-token list (supported-chains doc) + `/quote` price impact                            |
-| 8   | `list_new_hooks`    | read  | scope `market/execution`, sinceDays?, pair?, limit?                                                                  | hooks with pools, TVL (market), firstSeen                                                                                     | v4 subgraph (market) · PoolManager `Initialize` logs, 5k-block windows (execution)                       |
-| 9   | `score_hook`        | read  | chainId, hookAddress                                                                                                 | score 0–100, band SAFE/CAUTION/DANGER, permissions, facts, per-rule breakdown with evidence + source, framework triggers      | **v4 Security Framework** + `v4-security-foundations` skill; `Hooks.sol` permission bits                 |
-| 10  | `get_hook_state`    | read  | chainId, hookAddress, poolIds?                                                                                       | codeHash, implementation (+ hash), owner, per-pool lpFee/protocolFee/sqrtPrice/tick/liquidity, takenAt                        | StateView `getSlot0`/`getLiquidity`; EIP-1967 slots                                                      |
-| 11  | `build_swap`        | build | chainId, swapper, tokenIn/out, amount, type, slippagePct, recipient?, resumeToken?, signature?                       | `READY` (approvals → swap) or `NEEDS_SIGNATURE` (approval preSteps, Permit2 typed data, resumeToken)                          | Trading API `/check_approval` → `/quote` → `/swap` · `swap-integration` skill                            |
-| 12  | `build_transfer`    | build | chainId, from, token, amount, to                                                                                     | `READY` (native value transfer or ERC-20 `transfer` calldata)                                                                 | viem `encodeFunctionData`                                                                                |
-| 13  | `build_lp_position` | build | chainId, owner, pool {poolReference, token0, token1}, independentToken, range, slippagePct, resumeToken?, signature? | `READY` (approvals → LP_CREATE, adjusted prices) or `NEEDS_SIGNATURE` (v4 batch permit)                                       | LP API `/lp/check_approval` → `/lp/create` · `lp-integration` skill                                      |
-| 14  | `build_lp_exit`     | build | chainId, owner, token0/1, tokenId, percent 1–100, claimFees                                                          | `READY` (LP_CLAIM? → LP_DECREASE) with expected amounts                                                                       | LP API `/lp/claim_fees`, `/lp/decrease`                                                                  |
-| 15  | `build_rebalance`   | build | chainId, owner, tokenId, token0/1, poolReference, newRange                                                           | `READY` exit steps + `next: { tool: 'build_lp_position', args }` from expected amounts                                        | LP API `/lp/decrease` + StateView fees + v4-sdk                                                          |
-| 16  | `plan_trigger`      | plan  | kind TAKE_PROFIT/STOP_LOSS/DCA/CHAINED/PRICE_ALERT, condition, actions[]                                             | canonical `TriggerSpec` + `humanSummary` ("Sell 50% of your ETH for USDC when ETH ≥ $3,312.40 (+2%)")                         | pure validation; reference price from mainnet `/quote` for `price_change_pct`                            |
+| #   | Tool                | Type  | Inputs (key)                                                                                                         | Outputs (key)                                                                                                                 | Uniswap source                                                                                                       |
+| --- | ------------------- | ----- | -------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| 1   | `get_quote`         | read  | chainId, tokenIn/out (symbol or address), amount (human), type, swapper, slippagePct?                                | amountIn/out (raw + decimal), minOut / maxIn, priceImpactPct, gas (wei + USD), route (pools, fees, hooks), quoteId, expiresAt | Trading API `POST /quote` (CLASSIC) · `swap-integration` skill                                                       |
+| 2   | `quote_pool`        | read  | chainId, poolKey, zeroForOne, exactAmount, type                                                                      | amountIn/out, gasEstimate, poolId                                                                                             | v4 **V4Quoter** `quoteExactInputSingle` / `quoteExactOutputSingle` via `eth_call` · `v4-sdk-integration`             |
+| 3   | `get_portfolio`     | read  | chainId, address, tokens?                                                                                            | per token: balanceRaw, balance, priceUsd, valueUsd; totalUsd                                                                  | multicall `balanceOf` + mainnet `/quote` reference prices                                                            |
+| 4   | `get_price_history` | read  | symbol, window `1h/24h/7d`, interval `hour/day`                                                                      | series `[{ts, priceUsd}]`, open/close/high/low, changePct, **asOf + lag + stale**                                             | v4 subgraph → **on-chain StateView at past blocks** → GeckoTerminal OHLCV (automatic failover)                       |
+| 5   | `get_lp_positions`  | read  | chainId, owner, tokenIds[]                                                                                           | pool key, hook, ticks, currentTick, inRange, amounts, uncollected fees, valueUsd                                              | v4 **PositionManager** + **StateView**; `@uniswap/v4-sdk` `Position` math                                            |
+| 6   | `compare_pools`     | read  | chainId, tokenA, tokenB                                                                                              | execution pools + mainnet market pools (TVL, 7d volume/fees, fee APR), ranked list, `recommended` + reasons                   | LP API `/lp/pool_info` + StateView; market: v4 subgraph → pool registry + **LP API reserves** + GeckoTerminal volume |
+| 7   | `check_token`       | read  | chainId, token                                                                                                       | allowlist, unsupported-list, isContract, liquidityDepthUsd ($1k probe), riskFlags, verdict OK/CAUTION/BLOCK                   | Uniswap unsupported-token list (supported-chains doc) + `/quote` price impact                                        |
+| 8   | `list_new_hooks`    | read  | scope `market/execution`, sinceDays?, pair?, limit?                                                                  | hooks with pools, TVL (market), firstSeen                                                                                     | market: v4 subgraph → v4 pool registry → PoolManager logs · execution: `Initialize` logs, 5k-block windows           |
+| 9   | `score_hook`        | read  | chainId, hookAddress                                                                                                 | score 0–100, band SAFE/CAUTION/DANGER, permissions, facts, per-rule breakdown with evidence + source, framework triggers      | **v4 Security Framework** + `v4-security-foundations` skill; `Hooks.sol` permission bits                             |
+| 10  | `get_hook_state`    | read  | chainId, hookAddress, poolIds?                                                                                       | codeHash, implementation (+ hash), owner, per-pool lpFee/protocolFee/sqrtPrice/tick/liquidity, takenAt                        | StateView `getSlot0`/`getLiquidity`; EIP-1967 slots                                                                  |
+| 11  | `build_swap`        | build | chainId, swapper, tokenIn/out, amount, type, slippagePct, recipient?, resumeToken?, signature?                       | `READY` (approvals → swap) or `NEEDS_SIGNATURE` (approval preSteps, Permit2 typed data, resumeToken)                          | Trading API `/check_approval` → `/quote` → `/swap` · `swap-integration` skill                                        |
+| 12  | `build_transfer`    | build | chainId, from, token, amount, to                                                                                     | `READY` (native value transfer or ERC-20 `transfer` calldata)                                                                 | viem `encodeFunctionData`                                                                                            |
+| 13  | `build_lp_position` | build | chainId, owner, pool {poolReference, token0, token1}, independentToken, range, slippagePct, resumeToken?, signature? | `READY` (approvals → LP_CREATE, adjusted prices) or `NEEDS_SIGNATURE` (v4 batch permit)                                       | LP API `/lp/check_approval` → `/lp/create` · `lp-integration` skill                                                  |
+| 14  | `build_lp_exit`     | build | chainId, owner, token0/1, tokenId, percent 1–100, claimFees                                                          | `READY` (LP_CLAIM? → LP_DECREASE) with expected amounts                                                                       | LP API `/lp/claim_fees`, `/lp/decrease`                                                                              |
+| 15  | `build_rebalance`   | build | chainId, owner, tokenId, token0/1, poolReference, newRange                                                           | `READY` exit steps + `next: { tool: 'build_lp_position', args }` from expected amounts                                        | LP API `/lp/decrease` + StateView fees + v4-sdk                                                                      |
+| 16  | `plan_trigger`      | plan  | kind TAKE_PROFIT/STOP_LOSS/DCA/CHAINED/PRICE_ALERT, condition, actions[]                                             | canonical `TriggerSpec` + `humanSummary` ("Sell 50% of your ETH for USDC when ETH ≥ $3,312.40 (+2%)")                         | pure validation; reference price from mainnet `/quote` for `price_change_pct`                                        |
 
 Tool errors are MCP tool errors (`isError: true`) whose text is
 `{"error":{"code":"NO_ROUTE","message":"…","retryable":false}}`. The codes are listed in
@@ -171,20 +174,46 @@ curl -s http://localhost:3002/mcp \
 
 ## Configuration
 
-| Variable                                     | Required             | Notes                                                                     |
-| -------------------------------------------- | -------------------- | ------------------------------------------------------------------------- |
-| `UNISWAP_API_KEY`                            | yes                  | Uniswap Developer Platform key (Trading + LP API)                         |
-| `EXECUTION_CHAIN_ID`                         | default `11155111`   | Build tools only target this chain; mainnet (1) is read-only              |
-| `EXECUTION_RPC_URL`, `MAINNET_RPC_URL`       | yes                  | Archive-capable RPC recommended (PoolManager start-block search)          |
-| `MCP_RESUME_SECRET`                          | yes                  | ≥ 32 chars; HMAC key for resumeTokens                                     |
-| `MCP_AUTH_TOKEN`                             | HTTP only            | ≥ 24 chars                                                                |
-| `THEGRAPH_API_KEY`, `UNISWAP_V4_SUBGRAPH_ID` | market data          | Without a key, subgraph tools return `NOT_CONFIGURED`                     |
-| `ETHERSCAN_API_KEY`                          | optional             | Verified source and contract age (Etherscan v2 multichain)                |
-| `UNISWAP_DECISION_ORIGIN`                    | default `autonomous` | `x-agent-info` attribution; use `human_mediated` in Claude Code           |
-| `UNISWAP_UNIVERSAL_ROUTER_VERSION`           | default `2.1.2`      | Also used to check the swap `to` address against `chains.ts`              |
-| `TOKEN_ALLOWLIST_JSON`                       | optional             | Extra tokens `[{chainId,address,symbol,decimals,referenceSymbol?}]`       |
-| `MCP_PORT` / `PORT`, `MCP_HOST`              | optional             | `--port` flag wins, then MCP_PORT, then PORT (Railway), then 3002         |
-| `HTTP_TIMEOUT_MS`, `LOGS_BLOCK_WINDOW`       | optional             | 10 000 ms; 5 000 blocks (halved automatically if the RPC rejects a range) |
+| Variable                                         | Required             | Notes                                                                     |
+| ------------------------------------------------ | -------------------- | ------------------------------------------------------------------------- |
+| `UNISWAP_API_KEY`                                | yes                  | Uniswap Developer Platform key (Trading + LP API)                         |
+| `EXECUTION_CHAIN_ID`                             | default `11155111`   | Build tools only target this chain; mainnet (1) is read-only              |
+| `EXECUTION_RPC_URL`, `MAINNET_RPC_URL`           | yes                  | Archive-capable RPC recommended (PoolManager start-block search)          |
+| `MCP_RESUME_SECRET`                              | yes                  | ≥ 32 chars; HMAC key for resumeTokens                                     |
+| `MCP_AUTH_TOKEN`                                 | HTTP only            | ≥ 24 chars                                                                |
+| `THEGRAPH_API_KEY`, `UNISWAP_V4_SUBGRAPH_ID`     | market data          | Official subgraph. Without a key, market tools fail over to RPC sources   |
+| `UNISWAP_V4_POOL_REGISTRY_SUBGRAPH_ID`           | default `6XvRX3…`    | Fallback pool/hook registry subgraph (empty = disabled)                   |
+| `GECKOTERMINAL_ENABLED`, `GECKOTERMINAL_API_URL` | default on           | Third-party fallback for TVL, volume and candles                          |
+| `MARKET_SOURCE_COOLDOWN_MS`                      | default `60000`      | How long a failed market-data source is skipped                           |
+| `ETHERSCAN_API_KEY`                              | optional             | Verified source and contract age (Etherscan v2 multichain)                |
+| `UNISWAP_DECISION_ORIGIN`                        | default `autonomous` | `x-agent-info` attribution; use `human_mediated` in Claude Code           |
+| `UNISWAP_UNIVERSAL_ROUTER_VERSION`               | default `2.1.2`      | Also used to check the swap `to` address against `chains.ts`              |
+| `TOKEN_ALLOWLIST_JSON`                           | optional             | Extra tokens `[{chainId,address,symbol,decimals,referenceSymbol?}]`       |
+| `MCP_PORT` / `PORT`, `MCP_HOST`                  | optional             | `--port` flag wins, then MCP_PORT, then PORT (Railway), then 3002         |
+| `HTTP_TIMEOUT_MS`, `LOGS_BLOCK_WINDOW`           | optional             | 10 000 ms; 5 000 blocks (halved automatically if the RPC rejects a range) |
+
+## Market data that survives outages
+
+On 2026-10-31 the official v4 subgraph broke. Its `handleSwap` mapping crashed with "unexpected
+null" at block 26315771, the subgraph was flagged `hasIndexingErrors`, and The Graph's indexers
+stopped serving it. Every market tool now fails over automatically between independent sources
+and reports which one it used (`source`, `source.provider` and `warnings`):
+
+| Capability                        | Source 1             | Source 2                                                                                  | Source 3                                    |
+| --------------------------------- | -------------------- | ----------------------------------------------------------------------------------------- | ------------------------------------------- |
+| Pools for a pair (TVL, fees, APR) | official v4 subgraph | v4 pool registry subgraph + **Uniswap LP API reserves** (TVL) + GeckoTerminal (7d volume) | GeckoTerminal discovery + LP API metadata   |
+| Price history                     | official v4 subgraph | **v4 StateView `getSlot0` at historical blocks** (archive RPC, deepest hookless pool)     | GeckoTerminal OHLCV                         |
+| New hooks, pools by hook          | official v4 subgraph | v4 pool registry subgraph (Initialize events only)                                        | PoolManager `Initialize` logs (RPC, ≤ 30 d) |
+
+- The official subgraph is skipped up front while `_meta.hasIndexingErrors` is true (checked every
+  5 min), so a broken subgraph costs one cheap request, not a timeout.
+- A source that fails cools down for `MARKET_SOURCE_COOLDOWN_MS` (60 s) and is then retried.
+- If every source fails, the error is `MARKET_DATA_UNAVAILABLE` (retryable), with each source and
+  its reason in `details.skipped`.
+- Uniswap-native sources come first. GeckoTerminal (third party) is the last resort and is labelled
+  as such.
+- **Diagnose in seconds:** `npm run check:sources` (in this package) checks
+  every source live and prints which one serves each capability.
 
 ## Correctness and safety
 
@@ -230,6 +259,7 @@ bunx nx run uniswap-agent-mcp:build       # tsc → dist/
 bunx nx run uniswap-agent-mcp:test        # vitest, no network
 # or from packages/plugins/uniswap-agent-mcp
 npm run gen:api                           # regenerate Trading API types from spec/
+npm run check:sources                     # LIVE health of every market-data source
 npm run smoke                             # LIVE smoke against real APIs (read-only + one unsigned build)
 ```
 

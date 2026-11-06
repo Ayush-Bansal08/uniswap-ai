@@ -13,6 +13,8 @@ export const TTL = Object.freeze({
   tokenMetadata: 24 * 60 * 60_000,
   unsupportedList: 24 * 60 * 60_000,
   deployBlock: 24 * 60 * 60_000,
+  /** How long a subgraph health (_meta) check is trusted. */
+  sourceHealth: 5 * 60_000,
 });
 
 export class TtlCache {

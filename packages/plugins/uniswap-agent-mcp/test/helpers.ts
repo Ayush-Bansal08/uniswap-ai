@@ -195,7 +195,14 @@ export class FakeReader implements ChainReader {
     if (this.quoteResult instanceof Error) throw this.quoteResult;
     return this.quoteResult;
   }
-  async getSlot0(_sv: Address, poolId: Hex) {
+  /** Historical slot0 by block (archive reads); falls back to the current value. */
+  slot0At: ((poolId: string, block: bigint) => Slot0 | Error) | null = null;
+  async getSlot0(_sv: Address, poolId: Hex, blockNumber?: bigint) {
+    if (blockNumber !== undefined && this.slot0At) {
+      const r = this.slot0At(poolId.toLowerCase(), blockNumber);
+      if (r instanceof Error) throw r;
+      return r;
+    }
     const s = this.slot0.get(poolId.toLowerCase());
     return s ?? { sqrtPriceX96: 0n, tick: 0, protocolFee: 0, lpFee: 0 };
   }

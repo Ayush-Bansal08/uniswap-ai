@@ -299,7 +299,7 @@ describe('score_hook tool', () => {
       poolCount: 1,
       dynamicFeePoolCount: 1,
       tvlUsd: '1250000.50',
-      ageSource: 'v4 subgraph (first pool created)',
+      ageSource: 'Uniswap v4 subgraph (official) (first pool created)',
     });
     expect(out.breakdown.map((b: { rule: string }) => b.rule)).toEqual([
       'high_risk_callbacks',
@@ -458,8 +458,13 @@ describe('list_new_hooks', () => {
     expect(out.hooks[0].hookAddress).toBe('0x0000000000000000000000000000000000000080');
     expect(out.hooks[1]).toMatchObject({ totalTvlUsd: '1250.25' });
     expect(out.hooks[1].pools).toHaveLength(2);
+    // The first subgraph call is the health precheck (_meta); find the pools query.
     const vars = (
-      h.http.callsTo('/subgraphs/id/')[0]!.body as { variables: Record<string, unknown> }
+      h.http
+        .callsTo('/subgraphs/id/')
+        .find((c) => (c.body as { query: string }).query.includes('pools('))!.body as {
+        variables: Record<string, unknown>;
+      }
     ).variables;
     expect(vars).toMatchObject({
       t0: ETH,
@@ -468,11 +473,31 @@ describe('list_new_hooks', () => {
     });
   });
 
-  it('market: fails clearly without THEGRAPH_API_KEY', async () => {
+  it('market: without THEGRAPH_API_KEY it falls back to mainnet PoolManager logs', async () => {
     const h = harness({ THEGRAPH_API_KEY: undefined });
-    expect(await fail(h, 'list_new_hooks', { scope: 'market' })).toMatchObject({
-      code: 'NOT_CONFIGURED',
-      retryable: false,
-    });
+    h.main.code.set('0x000000000004444c5dc75cb358380d2e3de08a90', '0x6080');
+    h.main.initializeLogs = [
+      {
+        poolId: `0x${'11'.repeat(32)}` as Hex,
+        currency0: ETH,
+        currency1: MAINNET_USDC,
+        fee: 3000,
+        tickSpacing: 60,
+        hooks: '0x0000000000000000000000000000000000000080',
+        blockNumber: 6_999_000n,
+      },
+    ];
+    const out = await ok(h, 'list_new_hooks', { scope: 'market', sinceDays: 7 });
+    expect(out.source).toBe('Uniswap v4 PoolManager Initialize logs (RPC)');
+    expect(out.hooks).toHaveLength(1);
+    expect(out.hooks[0].pools[0]).toMatchObject({ token1Symbol: 'USDC', fee: 3000 });
+    expect(out.warnings.join(' ')).toMatch(/THEGRAPH_API_KEY is not set/);
+  });
+
+  it('market: reports MARKET_DATA_UNAVAILABLE (retryable) when every source fails', async () => {
+    const h = harness({ THEGRAPH_API_KEY: undefined });
+    const err = await fail(h, 'list_new_hooks', { scope: 'market' });
+    expect(err).toMatchObject({ code: 'MARKET_DATA_UNAVAILABLE', retryable: true });
+    expect(err.message).toMatch(/uniswap-v4-subgraph.*uniswap-v4-pool-registry.*poolmanager-logs/);
   });
 });

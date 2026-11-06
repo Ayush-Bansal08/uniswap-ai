@@ -5,14 +5,17 @@
 import { TtlCache } from './cache.js';
 import { getChain, MAINNET_CHAIN_ID } from './chains.js';
 import { EtherscanClient } from './clients/etherscan.js';
+import { GeckoTerminalClient } from './clients/geckoterminal.js';
 import { createResilientFetch, type FetchLike } from './clients/http.js';
 import { LpApiClient } from './clients/lpApi.js';
+import { PoolRegistryClient } from './clients/poolRegistry.js';
 import { ViemChainReader, type ChainReader } from './clients/rpc.js';
 import { SubgraphClient } from './clients/subgraph.js';
 import { TradingApiClient } from './clients/tradingApi.js';
 import type { Config } from './config.js';
 import { McpToolError } from './errors.js';
 import { createLogger, type Logger } from './logger.js';
+import { SourceHealth } from './market/health.js';
 import { ResumeTokens } from './resume.js';
 import { TokenRegistry, UnsupportedTokenList } from './tokens.js';
 
@@ -22,6 +25,12 @@ export interface ToolDeps {
   trading: TradingApiClient;
   lp: LpApiClient;
   subgraph: SubgraphClient;
+  /** Fallback v4 pool registry subgraph (Initialize events). */
+  registry: PoolRegistryClient;
+  /** Third-party fallback for TVL / volume / prices. */
+  gecko: GeckoTerminalClient;
+  /** Market-data source health (cooldowns after failures). */
+  health: SourceHealth;
   etherscan: EtherscanClient;
   tokens: TokenRegistry;
   unsupported: UnsupportedTokenList;
@@ -107,6 +116,19 @@ export function createDeps(config: Config, overrides: DepsOverrides = {}): ToolD
       subgraphId: config.UNISWAP_V4_SUBGRAPH_ID,
       fetch,
     }),
+    registry: new PoolRegistryClient({
+      gatewayUrl: config.THEGRAPH_GATEWAY_URL,
+      apiKey: config.THEGRAPH_API_KEY,
+      subgraphId: config.UNISWAP_V4_POOL_REGISTRY_SUBGRAPH_ID,
+      fetch,
+    }),
+    gecko: new GeckoTerminalClient({
+      baseUrl: config.GECKOTERMINAL_API_URL,
+      network: 'eth',
+      fetch,
+      enabled: config.GECKOTERMINAL_ENABLED,
+    }),
+    health: new SourceHealth(now, config.MARKET_SOURCE_COOLDOWN_MS),
     etherscan: new EtherscanClient({
       baseUrl: config.ETHERSCAN_API_URL,
       apiKey: config.ETHERSCAN_API_KEY,

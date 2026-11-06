@@ -56,6 +56,21 @@ export const ConfigSchema = z.object({
     .min(10)
     .default('DiYPVdygkfjDWhbxGSqAQxwBKmfKnkWQojqeM2rkLb3G'),
   THEGRAPH_GATEWAY_URL: url.default('https://gateway.thegraph.com/api'),
+  /**
+   * Fallback pool registry subgraph (Initialize events only: pools, hooks, fees). Used when the
+   * official analytics subgraph is unhealthy. Empty string disables it.
+   */
+  UNISWAP_V4_POOL_REGISTRY_SUBGRAPH_ID: z
+    .string()
+    .default('6XvRX3WHSvzBVTiPdF66XSBVbxWuHqijWANbjJxRDyzr'),
+  /** Third-party fallback for TVL/volume/prices (GeckoTerminal, no key). */
+  GECKOTERMINAL_API_URL: url.default('https://api.geckoterminal.com/api/v2'),
+  GECKOTERMINAL_ENABLED: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((v) => v === 'true'),
+  /** How long a failed market-data source is skipped before being retried. */
+  MARKET_SOURCE_COOLDOWN_MS: z.coerce.number().int().min(0).max(3_600_000).default(60_000),
   ETHERSCAN_API_KEY: z.string().min(8).optional(),
   ETHERSCAN_API_URL: url.default('https://api.etherscan.io/v2/api'),
   UNSUPPORTED_TOKENS_URL: url.default('https://unsupportedtokens.uniswap.org'),

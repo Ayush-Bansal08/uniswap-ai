@@ -1,13 +1,16 @@
 /**
- * get_price_history — USD price series from the official Uniswap v4 mainnet subgraph.
- * ETH uses the deepest native-ETH/USDC v4 pool (PoolHourData / PoolDayData token prices);
- * other symbols use TokenHourData / TokenDayData.priceUSD. Reports subgraph lag (`asOf`).
+ * get_price_history — USD price series for an allowlisted token on Ethereum mainnet.
+ *
+ * Sources, with automatic failover (src/market/data.ts `priceSeries`):
+ *   1. official Uniswap v4 subgraph (PoolHourData/PoolDayData for ETH, TokenHour/DayData otherwise)
+ *   2. Uniswap v4 StateView read on-chain at historical blocks (archive RPC) on the deepest
+ *      hookless v4 <token>/USDC pool — Uniswap contracts only, no indexer
+ *   3. GeckoTerminal OHLCV for the deepest Uniswap v4 pool (third party)
+ * `source.provider` says which one answered; `asOf`/`lagSeconds`/`stale` describe freshness.
  */
 import { Decimal } from '../amounts.js';
-import { cacheKey, TTL } from '../cache.js';
-import { MAINNET_CHAIN_ID, NATIVE_ADDRESS, requireChainAddress } from '../chains.js';
-import type { SgPricePoint, SubgraphMeta } from '../clients/subgraph.js';
-import { invalidInput, McpToolError } from '../errors.js';
+import { invalidInput } from '../errors.js';
+import { priceSeries } from '../market/data.js';
 import { GetPriceHistoryInputSchema, GetPriceHistoryOutputSchema } from '../schemas.js';
 import { defineTool } from './define.js';
 
@@ -17,9 +20,9 @@ export const STALE_AFTER_SECONDS = 2 * 3_600;
 
 export const getPriceHistoryTool = defineTool({
   name: 'get_price_history',
-  title: 'Price history (v4 subgraph)',
+  title: 'Price history (Uniswap v4, mainnet)',
   description:
-    'USD price history for a token from the official Uniswap v4 subgraph on Ethereum mainnet. ETH comes from the deepest ETH/USDC v4 pool; other allowlisted symbols from token hour/day data. window: 1h | 24h | 7d, interval: hour | day. Returns the series plus open/close/high/low/changePct and asOf (last indexed block time) with a stale flag, because the subgraph can lag. Read-only.',
+    'USD price history for a token on Ethereum mainnet from Uniswap v4: the official v4 subgraph, failing over to on-chain StateView reads at historical blocks on the deepest hookless v4 pool, then GeckoTerminal candles. window: 1h | 24h | 7d, interval: hour | day. Returns the series, open/close/high/low/changePct, and asOf/lagSeconds/stale. source.provider names the source used. Read-only.',
   kind: 'read',
   input: GetPriceHistoryInputSchema,
   output: GetPriceHistoryOutputSchema,
@@ -30,69 +33,11 @@ export const getPriceHistoryTool = defineTool({
     }
     const nowSec = Math.floor(deps.now() / 1000);
     const windowStart = nowSec - WINDOW_SECONDS[args.window];
-    const since =
-      args.interval === 'day'
-        ? windowStart - (windowStart % 86_400)
-        : windowStart - (windowStart % 3_600);
+    const step = args.interval === 'day' ? 86_400 : 3_600;
+    const since = windowStart - (windowStart % step);
 
-    const loaded = await deps.cache.wrap(
-      cacheKey('price-history', { symbol, w: args.window, i: args.interval, since }),
-      TTL.poolStats,
-      async () => {
-        if (symbol === 'ETH' || symbol === 'WETH') {
-          const usdc = requireChainAddress(MAINNET_CHAIN_ID, 'usdc');
-          const { pools } = await deps.subgraph.poolsForPair(NATIVE_ADDRESS, usdc, 5);
-          const pool = pools[0];
-          if (!pool)
-            throw new McpToolError('POOL_NOT_FOUND', 'No ETH/USDC v4 pool found in the subgraph', {
-              retryable: false,
-            });
-          const { points, meta } = await deps.subgraph.poolPrices(pool.id, args.interval, since);
-          const ethIsToken0 = pool.token0.id.toLowerCase() === NATIVE_ADDRESS;
-          return {
-            source: {
-              kind: 'pool' as const,
-              id: pool.id,
-              description: `Uniswap v4 ETH/USDC pool (fee ${pool.feeTier}, TVL $${Math.round(
-                Number(pool.totalValueLockedUSD)
-              ).toLocaleString('en-US')})`,
-            },
-            // v4 subgraph: token1Price = token1 per token0. ETH is currency0 → USDC per ETH = token1Price.
-            series: points.map((p: SgPricePoint) => ({
-              ts: p.ts,
-              price: (ethIsToken0 ? p.token1Price : p.token0Price) ?? '0',
-            })),
-            meta,
-          };
-        }
-        const token = deps.tokens.mainnetToken(symbol);
-        if (!token) {
-          throw new McpToolError(
-            'UNKNOWN_TOKEN',
-            `No mainnet reference token for "${symbol}" (allowlist it in TOKEN_ALLOWLIST_JSON for chain 1)`,
-            {
-              retryable: false,
-            }
-          );
-        }
-        const { points, meta } = await deps.subgraph.tokenPrices(
-          token.address,
-          args.interval,
-          since
-        );
-        return {
-          source: {
-            kind: 'token' as const,
-            id: token.address.toLowerCase(),
-            description: `Uniswap v4 subgraph ${symbol} ${args.interval} data`,
-          },
-          series: points.map((p: SgPricePoint) => ({ ts: p.ts, price: p.priceUSD ?? '0' })),
-          meta,
-        };
-      }
-    );
-
-    const series = loaded.series
+    const loaded = await priceSeries(deps, { symbol, interval: args.interval, sinceUnix: since });
+    const series = loaded.data.points
       .filter((p) => new Decimal(p.price).gt(0))
       .map((p) => ({
         ts: new Date(p.ts * 1000).toISOString(),
@@ -101,13 +46,18 @@ export const getPriceHistoryTool = defineTool({
     const values = series.map((p) => new Decimal(p.priceUsd));
     const open = values[0] ?? null;
     const close = values.at(-1) ?? null;
-    const meta: SubgraphMeta = loaded.meta;
-    const lag = meta.blockTimestamp !== null ? Math.max(0, nowSec - meta.blockTimestamp) : null;
+    const lag = loaded.data.lagSeconds;
+    const errors = loaded.data.hasIndexingErrors;
     return {
       symbol,
       window: args.window,
       interval: args.interval,
-      source: loaded.source,
+      source: {
+        kind: loaded.data.sourceKind,
+        id: loaded.data.sourceId,
+        description: loaded.data.description,
+        provider: loaded.source,
+      },
       series,
       open: open?.toFixed() ?? null,
       close: close?.toFixed() ?? null,
@@ -117,20 +67,22 @@ export const getPriceHistoryTool = defineTool({
         open && close && open.gt(0)
           ? close.minus(open).div(open).mul(100).toDecimalPlaces(2).toFixed()
           : null,
-      asOf:
-        meta.blockTimestamp !== null ? new Date(meta.blockTimestamp * 1000).toISOString() : null,
+      asOf: loaded.asOf,
       lagSeconds: lag,
-      stale: lag === null || lag > STALE_AFTER_SECONDS || meta.hasIndexingErrors,
-      hasIndexingErrors: meta.hasIndexingErrors,
+      stale: lag === null || lag > STALE_AFTER_SECONDS || errors === true,
+      hasIndexingErrors: errors,
+      warnings: loaded.warnings,
     };
   },
   summarize(o) {
     if (o.series.length === 0)
-      return `No ${o.symbol} price data for ${o.window} (subgraph asOf ${o.asOf ?? 'unknown'}).`;
+      return `No ${o.symbol} price data for ${o.window} (${o.source.provider}, asOf ${
+        o.asOf ?? 'unknown'
+      }).`;
     return `${o.symbol} ${o.window}: $${o.open} → $${o.close} (${o.changePct}%), high $${
       o.high
-    }, low $${o.low}; ${o.series.length} ${o.interval} points; asOf ${o.asOf}${
-      o.stale ? ' (STALE)' : ''
-    }.`;
+    }, low $${o.low}; ${o.series.length} ${o.interval} points via ${o.source.provider}; asOf ${
+      o.asOf
+    }${o.stale ? ' (STALE)' : ''}.`;
   },
 });

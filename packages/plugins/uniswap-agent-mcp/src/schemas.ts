@@ -123,6 +123,7 @@ export const TOOL_ERROR_CODES = [
   'UPSTREAM_TIMEOUT',
   'RATE_LIMITED',
   'SUBGRAPH_UNAVAILABLE',
+  'MARKET_DATA_UNAVAILABLE',
   'RPC_ERROR',
   'INVALID_TX',
   'RESUME_TOKEN_INVALID',
@@ -414,6 +415,8 @@ export const GetPriceHistoryOutputSchema = z.object({
     kind: z.enum(['pool', 'token']),
     id: z.string(),
     description: z.string(),
+    /** Which market-data source served this (failover order: subgraph → StateView → GeckoTerminal). */
+    provider: z.string(),
   }),
   series: z.array(z.object({ ts: IsoDateTimeSchema, priceUsd: z.string() })),
   open: z.string().nullable(),
@@ -426,6 +429,7 @@ export const GetPriceHistoryOutputSchema = z.object({
   lagSeconds: z.number().int().nullable(),
   stale: z.boolean(),
   hasIndexingErrors: z.boolean().nullable(),
+  warnings: z.array(z.string()),
 });
 
 // ---------------------------------------------------------------------------
@@ -505,11 +509,12 @@ export const MarketPoolSchema = z.object({
   tickSpacing: z.number().int(),
   hookAddress: AddressSchema,
   isDynamicFee: z.boolean(),
-  tvlUsd: z.string(),
-  volume7dUsd: z.string(),
-  fees7dUsd: z.string(),
-  feeAprPct: z.string(),
-  createdAt: IsoDateTimeSchema,
+  /** null = unknown on the source that served this request. */
+  tvlUsd: z.string().nullable(),
+  volume7dUsd: z.string().nullable(),
+  fees7dUsd: z.string().nullable(),
+  feeAprPct: z.string().nullable(),
+  createdAt: IsoDateTimeSchema.nullable(),
 });
 
 export const RankedPoolSchema = z.object({
@@ -548,6 +553,7 @@ export const ComparePoolsOutputSchema = z.object({
     pools: z.array(MarketPoolSchema),
     asOf: IsoDateTimeSchema.nullable(),
     error: z.string().nullable(),
+    warnings: z.array(z.string()),
   }),
   ranked: z.array(RankedPoolSchema),
   recommended: RankedPoolSchema.nullable(),
@@ -630,6 +636,9 @@ export const ListNewHooksOutputSchema = z.object({
   scannedToBlock: z.string().nullable(),
   asOf: IsoDateTimeSchema.nullable(),
   truncated: z.boolean(),
+  /** Which source served this (market: subgraph → pool registry → PoolManager logs). */
+  source: z.string(),
+  warnings: z.array(z.string()),
 });
 
 // ---------------------------------------------------------------------------
@@ -778,7 +787,7 @@ export const GetHookStateOutputSchema = z.object({
       liquidity: RawAmountSchema,
     })
   ),
-  poolDiscovery: z.enum(['input', 'subgraph', 'logs', 'none']),
+  poolDiscovery: z.enum(['input', 'subgraph', 'registry', 'logs', 'none']),
   blockNumber: z.string(),
   takenAt: IsoDateTimeSchema,
 });

@@ -138,25 +138,29 @@ describe('get_price_history', () => {
     expect(out.asOf).toBe(new Date((NOW_SEC - 400) * 1000).toISOString());
     expect(out.lagSeconds).toBe(400);
     expect(out.stale).toBe(false);
-    const sent = h.http.callsTo('/subgraphs/id/')[0]!.body as {
+    expect(out.source.provider).toBe('uniswap-v4-subgraph');
+    const sent = h.http
+      .callsTo('/subgraphs/id/')
+      .find((c) => (c.body as { query: string }).query.includes('pools('))!.body as {
       variables: Record<string, unknown>;
     };
     expect(sent.variables).toMatchObject({ t0: ETH, t1: MAINNET_USDC.toLowerCase() });
   });
 
-  it('flags stale data when the subgraph lags or has indexing errors', async () => {
+  it('flags stale data when the subgraph lags', async () => {
     const h = harness();
-    routeSubgraph(h, { number: 1, timestamp: NOW_SEC - 30_000 }, true);
+    routeSubgraph(h, { number: 1, timestamp: NOW_SEC - 30_000 }, false);
     const out = await ok(h, 'get_price_history', {
       symbol: 'ETH',
       window: '24h',
       interval: 'hour',
     });
     expect(out.stale).toBe(true);
-    expect(out.hasIndexingErrors).toBe(true);
+    expect(out.hasIndexingErrors).toBe(false);
+    expect(out.lagSeconds).toBe(30_000);
   });
 
-  it('reports subgraph failures as retryable SUBGRAPH_UNAVAILABLE', async () => {
+  it('reports MARKET_DATA_UNAVAILABLE (retryable) when every source fails', async () => {
     const h = harness();
     h.http.on('POST', GRAPH_URL, {
       body: { errors: [{ message: 'no attestation: indexing_error' }] },
@@ -164,7 +168,7 @@ describe('get_price_history', () => {
     expect(
       await fail(h, 'get_price_history', { symbol: 'ETH', window: '7d', interval: 'day' })
     ).toMatchObject({
-      code: 'SUBGRAPH_UNAVAILABLE',
+      code: 'MARKET_DATA_UNAVAILABLE',
       retryable: true,
     });
   });

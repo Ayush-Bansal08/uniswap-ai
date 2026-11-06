@@ -1,6 +1,7 @@
 /**
  * list_new_hooks — newly seen v4 hooks.
- *   market:    mainnet v4 subgraph pools with a non-zero `hooks`, newest first (TVL included)
+ *   market:    mainnet pools with a non-zero `hooks`, newest first. Failover: official v4 subgraph
+ *              → v4 pool registry subgraph (+ GeckoTerminal TVL) → PoolManager logs (RPC)
  *   execution: PoolManager `Initialize` logs on the execution chain (5k-block windows)
  */
 import { getAddress, type Address } from 'viem';
@@ -11,6 +12,7 @@ import type { ToolDeps } from '../context.js';
 import { invalidInput } from '../errors.js';
 import { isZeroHook } from '../hooks/permissions.js';
 import { ListNewHooksInputSchema, ListNewHooksOutputSchema } from '../schemas.js';
+import { newHookPools } from '../market/data.js';
 import { scanInitializeLogs } from '../services/initializeScan.js';
 import { sortTokens } from '../v4/math.js';
 import { defineTool, short } from './define.js';
@@ -29,7 +31,7 @@ export const listNewHooksTool = defineTool({
   name: 'list_new_hooks',
   title: 'New v4 hooks',
   description:
-    'List recently seen Uniswap v4 hooks with their pools. scope "market": Ethereum-mainnet v4 subgraph pools with a non-zero hook, newest first, with TVL. scope "execution": PoolManager Initialize events on the execution chain (eth_getLogs in 5k-block windows). Optional pair filter and sinceDays (default 30). Read-only.',
+    'List recently seen Uniswap v4 hooks with their pools. scope "market": Ethereum-mainnet pools with a non-zero hook, newest first, with TVL when known (official v4 subgraph, failing over to the v4 pool registry subgraph, then PoolManager logs; `source` says which). scope "execution": PoolManager Initialize events on the execution chain (eth_getLogs in 5k-block windows). Optional pair filter and sinceDays (default 30). Read-only.',
   kind: 'read',
   input: ListNewHooksInputSchema,
   output: ListNewHooksOutputSchema,
@@ -42,13 +44,14 @@ export const listNewHooksTool = defineTool({
       // Pair symbols resolve on mainnet (market data lives there).
       const pair = await pairOn(deps, MAINNET_CHAIN_ID, args.pair);
       const first = Math.min(1000, limit * 10);
-      const { pools, meta } = await deps.subgraph.newHookPools({
+      // Failover: official subgraph → v4 pool registry subgraph → PoolManager logs (RPC).
+      const listing = await newHookPools(deps, {
         sinceUnix: nowSec - sinceDays * 86_400,
         first,
-        ...(pair ? { pair: [pair[0].address, pair[1].address] as [string, string] } : {}),
+        ...(pair ? { pair: [pair[0].address as Address, pair[1].address as Address] } : {}),
       });
       const groups = new Map<string, HookGroup>();
-      for (const p of pools) {
+      for (const p of listing.data) {
         if (isZeroHook(p.hooks)) continue;
         const hook = getAddress(p.hooks);
         const group = groups.get(hook) ?? {
@@ -56,28 +59,29 @@ export const listNewHooksTool = defineTool({
           chainId: MAINNET_CHAIN_ID,
           pools: [],
           firstSeen: null,
-          totalTvlUsd: '0',
+          totalTvlUsd: null,
         };
-        const createdAt = new Date(Number(p.createdAtTimestamp) * 1000).toISOString();
         group.pools.push({
-          poolId: p.id.toLowerCase(),
-          token0: getAddress(p.token0.id),
-          token1: getAddress(p.token1.id),
-          token0Symbol: p.token0.symbol || null,
-          token1Symbol: p.token1.symbol || null,
-          fee: Number(p.feeTier),
-          tickSpacing: Number(p.tickSpacing),
-          isDynamicFee: Number(p.feeTier) === DYNAMIC_FEE_FLAG,
-          tvlUsd: new Decimal(p.totalValueLockedUSD || '0').toDecimalPlaces(2).toFixed(),
-          createdAt,
-          createdAtBlock: p.createdAtBlockNumber,
+          poolId: p.poolId,
+          token0: p.token0,
+          token1: p.token1,
+          token0Symbol: p.token0Symbol,
+          token1Symbol: p.token1Symbol,
+          fee: p.fee ?? 0,
+          tickSpacing: p.tickSpacing ?? 0,
+          isDynamicFee: p.fee === DYNAMIC_FEE_FLAG,
+          tvlUsd: p.tvlUsd,
+          createdAt: p.createdAt,
+          createdAtBlock: p.createdAtBlock,
         });
-        group.firstSeen =
-          !group.firstSeen || createdAt < group.firstSeen ? createdAt : group.firstSeen;
-        group.totalTvlUsd = new Decimal(group.totalTvlUsd ?? '0')
-          .plus(p.totalValueLockedUSD || '0')
-          .toDecimalPlaces(2)
-          .toFixed();
+        if (p.createdAt && (!group.firstSeen || p.createdAt < group.firstSeen))
+          group.firstSeen = p.createdAt;
+        if (p.tvlUsd !== null) {
+          group.totalTvlUsd = new Decimal(group.totalTvlUsd ?? '0')
+            .plus(p.tvlUsd)
+            .toDecimalPlaces(2)
+            .toFixed();
+        }
         groups.set(hook, group);
       }
       const hooks = [...groups.values()]
@@ -89,9 +93,11 @@ export const listNewHooksTool = defineTool({
         sinceDays,
         hooks,
         scannedFromBlock: null,
-        scannedToBlock: meta.blockNumber ? String(meta.blockNumber) : null,
-        asOf: meta.blockTimestamp ? new Date(meta.blockTimestamp * 1000).toISOString() : null,
-        truncated: pools.length >= first || groups.size > limit,
+        scannedToBlock: null,
+        asOf: listing.asOf,
+        truncated: listing.truncated || groups.size > limit,
+        source: listing.sourceLabel,
+        warnings: listing.warnings,
       };
     }
 
@@ -158,6 +164,8 @@ export const listNewHooksTool = defineTool({
       scannedToBlock: scan.toBlock.toString(),
       asOf: new Date(deps.now()).toISOString(),
       truncated: scan.truncated || groups.size > limit,
+      source: 'Uniswap v4 PoolManager Initialize logs (RPC)',
+      warnings: [],
     };
   },
   summarize(o) {
@@ -171,6 +179,8 @@ export const listNewHooksTool = defineTool({
       );
     return `${o.hooks.length} hook(s) seen in the last ${o.sinceDays} days on chain ${o.chainId} (${
       o.scope
-    })${top.length ? `: ${top.join(', ')}` : ''}${o.truncated ? ' [truncated]' : ''}.`;
+    })${top.length ? `: ${top.join(', ')}` : ''}${o.truncated ? ' [truncated]' : ''} via ${
+      o.source
+    }.`;
   },
 });

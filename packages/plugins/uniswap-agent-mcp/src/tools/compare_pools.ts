@@ -1,14 +1,15 @@
 /**
  * compare_pools — which v4 pool to use for a pair, from two labelled sources:
  *   execution chain: LP API `/lp/pool_info` (which pools exist) + StateView (live liquidity/tick)
- *   market reference (mainnet): v4 subgraph TVL, 7-day volume/fees, fee APR = fees7d·52/TVL·100
+ *   market reference (mainnet): TVL, 7-day volume/fees, fee APR = fees7d·52/TVL·100, from the
+ *   failover chain in src/market/data.ts (official subgraph → pool registry + LP API reserves +
+ *   GeckoTerminal volume → GeckoTerminal)
  * Ranking is deterministic: usable on the execution chain first, then APR × hook-band factor,
  * then TVL, then fee tier, then poolId.
  */
 import { getAddress, type Address, type Hex } from 'viem';
 import type { z } from 'zod';
 import { Decimal } from '../amounts.js';
-import { cacheKey, TTL } from '../cache.js';
 import { DYNAMIC_FEE_FLAG, getChain, MAINNET_CHAIN_ID, ZERO_ADDRESS } from '../chains.js';
 import type { PoolInformation } from '../clients/lpApi.js';
 import { requireReadableChain, type ToolDeps } from '../context.js';
@@ -21,6 +22,7 @@ import {
   type TokenInfo,
 } from '../schemas.js';
 import { scoreHookCached } from '../services/hookFacts.js';
+import { pairPools } from '../market/data.js';
 import { sortTokens } from '../v4/math.js';
 import { defineTool } from './define.js';
 
@@ -135,7 +137,7 @@ async function marketPools(
   chainId: number,
   a: TokenInfo,
   b: TokenInfo
-): Promise<{ pools: MarketPool[]; asOf: string | null }> {
+): Promise<{ pools: MarketPool[]; asOf: string | null; source: string; warnings: string[] }> {
   const refA = deps.tokens.referenceSymbolFor(chainId, a.address);
   const refB = deps.tokens.referenceSymbolFor(chainId, b.address);
   const mA = refA ? deps.tokens.mainnetToken(refA) : undefined;
@@ -144,55 +146,44 @@ async function marketPools(
     throw new McpToolError(
       'UNKNOWN_TOKEN',
       'No mainnet reference tokens for this pair (allowlist them for chain 1)',
-      {
-        retryable: false,
-      }
+      { retryable: false }
     );
   }
-  const [m0, m1] = sortTokens(mA, mB);
-  return deps.cache.wrap(
-    cacheKey('market-pools', { m0: m0.address, m1: m1.address }),
-    TTL.poolStats,
-    async () => {
-      const { pools, meta } = await deps.subgraph.poolsForPair(m0.address, m1.address, 20);
-      const nowSec = Math.floor(deps.now() / 1000);
-      const days = await deps.subgraph.poolDayData(
-        pools.map((p) => p.id),
-        nowSec - 7 * 86_400
-      );
-      const out = pools.map((p) => {
-        const mine = days.filter((d) => d.pool.id === p.id);
-        const fees7d = mine.reduce((acc, d) => acc.plus(d.feesUSD || '0'), new Decimal(0));
-        const vol7d = mine.reduce((acc, d) => acc.plus(d.volumeUSD || '0'), new Decimal(0));
-        const tvl = new Decimal(p.totalValueLockedUSD || '0');
-        const apr = tvl.gt(0) ? fees7d.mul(52).div(tvl).mul(100) : new Decimal(0);
-        const fee = Number(p.feeTier);
-        return {
-          poolId: p.id.toLowerCase() as Hex,
-          fee,
-          tickSpacing: Number(p.tickSpacing),
-          hookAddress: /^0x[0-9a-fA-F]{40}$/.test(p.hooks) ? getAddress(p.hooks) : ZERO_ADDRESS,
-          isDynamicFee: fee === DYNAMIC_FEE_FLAG,
-          tvlUsd: tvl.toDecimalPlaces(2).toFixed(),
-          volume7dUsd: vol7d.toDecimalPlaces(2).toFixed(),
-          fees7dUsd: fees7d.toDecimalPlaces(2).toFixed(),
-          feeAprPct: apr.toDecimalPlaces(2).toFixed(),
-          createdAt: new Date(Number(p.createdAtTimestamp) * 1000).toISOString(),
-        } satisfies MarketPool;
-      });
+  // Failover: official subgraph → pool registry + LP API reserves + GeckoTerminal volume → GeckoTerminal.
+  const listing = await pairPools(deps, mA.address as Address, mB.address as Address, {
+    withVolume: true,
+  });
+  const pools = listing.data
+    .filter((p) => p.fee !== null && p.tickSpacing !== null)
+    .map((p) => {
+      const tvl = p.tvlUsd !== null ? new Decimal(p.tvlUsd) : null;
+      const apr =
+        tvl && tvl.gt(0) && p.fees7dUsd !== null
+          ? new Decimal(p.fees7dUsd).mul(52).div(tvl).mul(100).toDecimalPlaces(2).toFixed()
+          : null;
       return {
-        pools: out,
-        asOf: meta.blockTimestamp ? new Date(meta.blockTimestamp * 1000).toISOString() : null,
-      };
-    }
-  );
+        poolId: p.poolId as Hex,
+        fee: p.fee!,
+        tickSpacing: p.tickSpacing!,
+        hookAddress: p.hooks,
+        isDynamicFee: p.fee === DYNAMIC_FEE_FLAG,
+        tvlUsd: p.tvlUsd,
+        volume7dUsd: p.volume7dUsd,
+        fees7dUsd: p.fees7dUsd,
+        feeAprPct: apr,
+        createdAt: p.createdAt,
+      } satisfies MarketPool;
+    })
+    .sort((x, y) => new Decimal(y.tvlUsd ?? -1).comparedTo(x.tvlUsd ?? -1))
+    .slice(0, 20);
+  return { pools, asOf: listing.asOf, source: listing.sourceLabel, warnings: listing.warnings };
 }
 
 export const comparePoolsTool = defineTool({
   name: 'compare_pools',
   title: 'Compare v4 pools for a pair',
   description:
-    'Compare Uniswap v4 pools for a token pair from two labelled sources: (1) the execution chain — pools that exist and can be used, from the LP API /lp/pool_info plus live StateView liquidity/tick; (2) the market reference on Ethereum mainnet — v4 subgraph TVL, 7-day volume and fees, fee APR. Hook pools are scored (score_hook). Returns a deterministic ranking and a recommended pool with reasons (usable first, then APR × hook-band factor, then TVL). Read-only.',
+    'Compare Uniswap v4 pools for a token pair from two labelled sources: (1) the execution chain — pools that exist and can be used, from the LP API /lp/pool_info plus live StateView liquidity/tick; (2) the market reference on Ethereum mainnet — TVL, 7-day volume and fees, fee APR, from the official v4 subgraph with automatic failover to the v4 pool registry + Uniswap LP API reserves + GeckoTerminal volume. Hook pools are scored (score_hook). Returns a deterministic ranking and a recommended pool with reasons (usable first, then APR × hook-band factor, then TVL). Read-only.',
   kind: 'read',
   input: ComparePoolsInputSchema,
   output: ComparePoolsOutputSchema,
@@ -211,7 +202,9 @@ export const comparePoolsTool = defineTool({
     ]);
     const exec = execResult.status === 'fulfilled' ? execResult.value : [];
     const market =
-      marketResult.status === 'fulfilled' ? marketResult.value : { pools: [], asOf: null };
+      marketResult.status === 'fulfilled'
+        ? marketResult.value
+        : { pools: [], asOf: null, source: 'unavailable', warnings: [] };
     const errorText = (r: PromiseSettledResult<unknown>) =>
       r.status === 'rejected'
         ? r.reason instanceof Error
@@ -266,9 +259,10 @@ export const comparePoolsTool = defineTool({
         : undefined;
       if (ref) usedMarket.add(ref.poolId);
       const h = hookInfo(args.chainId, p.hookAddress);
-      const adjusted = ref
-        ? new Decimal(ref.feeAprPct).mul(h.factor).toDecimalPlaces(2).toFixed()
-        : null;
+      const adjusted =
+        ref && ref.feeAprPct !== null
+          ? new Decimal(ref.feeAprPct).mul(h.factor).toDecimalPlaces(2).toFixed()
+          : null;
       const reasons = [
         usable
           ? 'Initialized with liquidity on the execution chain'
@@ -276,7 +270,7 @@ export const comparePoolsTool = defineTool({
         `Fee ${(p.fee / 10_000).toFixed(2)}% / tickSpacing ${p.tickSpacing}`,
         h.label,
         ref
-          ? `Mainnet reference: APR ${ref.feeAprPct}%, TVL $${ref.tvlUsd}`
+          ? `Mainnet reference: APR ${ref.feeAprPct ?? 'n/a'}%, TVL ${ref.tvlUsd ?? 'n/a'}`
           : 'No matching mainnet reference pool',
       ];
       if (h.band === 'DANGER') reasons.push('Excluded from recommendation: DANGER hook');
@@ -308,11 +302,16 @@ export const comparePoolsTool = defineTool({
         hookBand: h.band,
         hookScore: h.score,
         referenceFeeAprPct: m.feeAprPct,
-        adjustedAprPct: new Decimal(m.feeAprPct).mul(h.factor).toDecimalPlaces(2).toFixed(),
+        adjustedAprPct:
+          m.feeAprPct !== null
+            ? new Decimal(m.feeAprPct).mul(h.factor).toDecimalPlaces(2).toFixed()
+            : null,
         referenceTvlUsd: m.tvlUsd,
         reasons: [
           'Mainnet market reference only (no equivalent pool on the execution chain)',
-          `APR ${m.feeAprPct}%, TVL $${m.tvlUsd}, 7d volume $${m.volume7dUsd}`,
+          `APR ${m.feeAprPct ?? 'n/a'}%, TVL ${m.tvlUsd ?? 'n/a'}, 7d volume ${
+            m.volume7dUsd ?? 'n/a'
+          }`,
           h.label,
         ],
       });
@@ -354,10 +353,11 @@ export const comparePoolsTool = defineTool({
       market: {
         chainId: 1 as const,
         label: 'Market reference (Ethereum mainnet)',
-        source: 'Uniswap v4 subgraph (TVL, PoolDayData fees/volume over 7 days)',
+        source: market.source,
         pools: market.pools,
         asOf: market.asOf,
         error: errorText(marketResult),
+        warnings: market.warnings,
       },
       ranked,
       recommended,

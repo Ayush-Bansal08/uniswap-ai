@@ -11,6 +11,7 @@ import type { ToolDeps } from '../context.js';
 import { decodeHookPermissions } from '../hooks/permissions.js';
 import { computeHookScore } from '../hooks/score.js';
 import type { HookFacts, ScoreHookOutput } from '../schemas.js';
+import { hookPools } from '../market/data.js';
 import { scanInitializeLogs } from './initializeScan.js';
 
 /** Storage slots for proxy detection. */
@@ -195,6 +196,8 @@ interface HookUsage {
   firstSeenUnix: number | null;
   firstSeenBlock: string | null;
   source: string;
+  /** Machine name of the source (uniswap-v4-subgraph | uniswap-v4-pool-registry | poolmanager-logs | none). */
+  sourceName?: string;
   poolIds: string[];
 }
 
@@ -215,19 +218,26 @@ export async function hookUsage(
   };
   try {
     if (chainId === MAINNET_CHAIN_ID) {
-      if (!deps.subgraph.configured) return empty;
-      const { pools } = await deps.subgraph.poolsByHook(hookAddress);
-      const first = pools[0];
+      // Failover: official subgraph → v4 pool registry subgraph → PoolManager logs (30 days).
+      const listing = await hookPools(deps, hookAddress);
+      const pools = [...listing.data].sort((x, y) =>
+        (x.createdAt ?? '').localeCompare(y.createdAt ?? '')
+      );
+      const first = pools.find((p) => p.createdAt) ?? pools[0];
+      const tvls = pools.map((p) => p.tvlUsd).filter((v): v is string => v !== null);
       return {
         poolCount: pools.length,
-        dynamicFeePoolCount: pools.filter((p) => Number(p.feeTier) === DYNAMIC_FEE_FLAG).length,
-        tvlUsd: pools
-          .reduce((acc, p) => acc.plus(p.totalValueLockedUSD || '0'), new Decimal(0))
-          .toFixed(2),
-        firstSeenUnix: first ? Number(first.createdAtTimestamp) : null,
-        firstSeenBlock: first ? first.createdAtBlockNumber : null,
-        source: 'v4 subgraph (first pool created)',
-        poolIds: pools.map((p) => p.id),
+        dynamicFeePoolCount: pools.filter((p) => p.fee === DYNAMIC_FEE_FLAG).length,
+        tvlUsd: tvls.length
+          ? tvls.reduce((acc, v) => acc.plus(v), new Decimal(0)).toFixed(2)
+          : null,
+        firstSeenUnix: first?.createdAt ? Math.floor(Date.parse(first.createdAt) / 1000) : null,
+        firstSeenBlock: first?.createdAtBlock ?? null,
+        source: `${listing.sourceLabel} (first pool created${
+          listing.completeHistory ? '' : ', last 30 days only'
+        })`,
+        sourceName: listing.source,
+        poolIds: pools.map((p) => p.poolId),
       };
     }
     const scan = await scanInitializeLogs(deps, chainId, { sinceDays: 30 });
@@ -243,6 +253,7 @@ export async function hookUsage(
       firstSeenUnix,
       firstSeenBlock: first ? first.blockNumber.toString() : null,
       source: 'PoolManager Initialize logs (last 30 days)',
+      sourceName: 'poolmanager-logs',
       poolIds: mine.map((l) => l.poolId),
     };
   } catch (err) {

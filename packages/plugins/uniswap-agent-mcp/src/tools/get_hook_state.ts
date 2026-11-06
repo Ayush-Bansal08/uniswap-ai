@@ -3,7 +3,7 @@
  * implementation, owner, per-pool fees/price/liquidity). Pure read; diffing is the caller's job.
  */
 import { getAddress, type Hex } from 'viem';
-import { getChain, MAINNET_CHAIN_ID } from '../chains.js';
+import { getChain } from '../chains.js';
 import { codeHashOf } from '../clients/rpc.js';
 import { requireReadableChain } from '../context.js';
 import { permissionsBitmap } from '../hooks/permissions.js';
@@ -35,12 +35,18 @@ export const getHookStateTool = defineTool({
     ]);
 
     let poolIds: string[] = args.poolIds ?? [];
-    let poolDiscovery: 'input' | 'subgraph' | 'logs' | 'none' = 'input';
+    let poolDiscovery: 'input' | 'subgraph' | 'registry' | 'logs' | 'none' = 'input';
     if (!args.poolIds) {
       const usage = await hookUsage(deps, args.chainId, hook);
       poolIds = usage.poolIds.slice(0, MAX_POOLS);
       poolDiscovery =
-        poolIds.length === 0 ? 'none' : args.chainId === MAINNET_CHAIN_ID ? 'subgraph' : 'logs';
+        poolIds.length === 0
+          ? 'none'
+          : usage.sourceName === 'uniswap-v4-subgraph'
+          ? 'subgraph'
+          : usage.sourceName === 'uniswap-v4-pool-registry'
+          ? 'registry'
+          : 'logs';
     }
 
     const pools = await Promise.all(
