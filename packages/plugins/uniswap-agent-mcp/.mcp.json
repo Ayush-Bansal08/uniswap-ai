@@ -1,0 +1,20 @@
+{
+  "mcpServers": {
+    "uniswap-agent": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/dist/index.js", "--transport", "stdio"],
+      "env": {
+        "UNISWAP_API_KEY": "${UNISWAP_API_KEY}",
+        "EXECUTION_CHAIN_ID": "${EXECUTION_CHAIN_ID:-11155111}",
+        "EXECUTION_RPC_URL": "${EXECUTION_RPC_URL}",
+        "MAINNET_RPC_URL": "${MAINNET_RPC_URL}",
+        "THEGRAPH_API_KEY": "${THEGRAPH_API_KEY:-}",
+        "ETHERSCAN_API_KEY": "${ETHERSCAN_API_KEY:-}",
+        "MCP_RESUME_SECRET": "${MCP_RESUME_SECRET}",
+        "UNISWAP_DECISION_ORIGIN": "human_mediated"
+      },
+      "description": "Uniswap quotes, pools, v4 hook scoring, positions and unsigned swap/LP transaction builders"
+    }
+  }
+}

@@ -1,0 +1,81 @@
+{
+  "name": "uniswap-agent-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "description": "Agent-ready Uniswap MCP server: 16 typed tools for quotes, pools, hooks, positions and UNSIGNED swap/LP transactions. Never holds a key.",
+  "keywords": [
+    "uniswap",
+    "mcp",
+    "model-context-protocol",
+    "trading-api",
+    "lp-api",
+    "v4",
+    "hooks",
+    "agent"
+  ],
+  "bin": {
+    "uniswap-agent-mcp": "./dist/index.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/lib.d.ts",
+      "import": "./dist/lib.js"
+    },
+    "./schemas": {
+      "types": "./dist/schemas.d.ts",
+      "import": "./dist/schemas.js"
+    }
+  },
+  "main": "./dist/lib.js",
+  "types": "./dist/lib.d.ts",
+  "files": [
+    "dist",
+    ".claude-plugin",
+    ".mcp.json",
+    "README.md",
+    "PLUGIN.md",
+    "CLAUDE.md"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "node --watch --import tsx src/index.ts --transport http --port 3002",
+    "start": "node dist/index.js --transport http",
+    "start:stdio": "node dist/index.js --transport stdio",
+    "build": "tsc -p tsconfig.build.json",
+    "gen:api": "openapi-typescript spec/uniswap-trading-openapi.json -o src/generated/trading-api.ts && prettier --write src/generated/trading-api.ts",
+    "lint": "eslint .",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "smoke": "tsx scripts/smoke.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.1",
+    "@uniswap/sdk-core": "7.19.4",
+    "@uniswap/v3-sdk": "3.31.5",
+    "@uniswap/v4-sdk": "2.4.1",
+    "decimal.js": "10.6.0",
+    "dotenv": "17.4.2",
+    "lru-cache": "11.5.3",
+    "openapi-fetch": "0.17.0",
+    "viem": "2.57.7",
+    "zod": "3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.5",
+    "openapi-typescript": "7.13.0",
+    "prettier": "3.9.10",
+    "tsx": "4.23.15",
+    "typescript": "5.9.3",
+    "vitest": "3.2.7"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Ayush-Bansal08/uniswap-ai.git",
+    "directory": "packages/plugins/uniswap-agent-mcp"
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "name": "uniswap-agent-mcp",
+  "version": "0.1.0",
+  "description": "Agent-ready Uniswap MCP server: 16 typed tools for quotes, pools, v4 hooks, positions and UNSIGNED swap/LP transactions (never holds a key)",
+  "author": {
+    "name": "Warden (ETHGlobal Mumbai 2026)"
+  },
+  "license": "MIT",
+  "keywords": [
+    "uniswap",
+    "mcp",
+    "trading-api",
+    "lp-api",
+    "v4",
+    "hooks",
+    "security-framework",
+    "agent",
+    "unsigned-transactions"
+  ],
+  "mcpServers": ["./.mcp.json"]
+}
